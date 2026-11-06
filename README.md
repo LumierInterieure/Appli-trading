@@ -20,7 +20,13 @@ npm start            # → http://localhost:8787
 ```
 
 Pour développer : `npm run dev` (interface sur http://localhost:5173, rechargement automatique).
-Sans connexion internet : `npm run dev:demo` (données simulées, clairement signalées « DÉMO »).
+Sans connexion internet : `npm run start:demo` (données simulées, clairement signalées « DÉMO »).
+
+### En cas de problème au lancement
+
+- « 'tsc' / 'vite' / 'tsx' n'est pas reconnu » : les dépendances ne sont pas (ou mal) installées. Supprimez le dossier `node_modules`, puis relancez `lancer.bat` (ou `npm install --include=dev`).
+- Le lanceur vérifie la version de Node.js (20 minimum) et affiche la cause de l'erreur au lieu de se fermer.
+- Le port 8787 est déjà pris : définissez `PORT=8788` dans le fichier `.env`.
 
 ### Activer l'analyse par l'IA (optionnel)
 

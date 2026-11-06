@@ -17,7 +17,9 @@ try {
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 8787);
-const FORCE_DEMO = process.env.DEMO === "1" || process.env.DEMO === "true";
+const FORCE_DEMO = process.env.DEMO === "1" || process.env.DEMO === "true" || process.argv.includes("--demo");
+/** Mode production : sert aussi l'interface compilée (dossier dist). */
+const PROD = process.env.NODE_ENV === "production" || process.argv.includes("--prod");
 
 /** Si le fournisseur est injoignable, on bascule en démo pendant un moment. */
 let upstreamDownUntil = 0;
@@ -135,7 +137,7 @@ app.post("/api/ai/analyze", async (req, res) => {
   await streamAnalysis(req.body ?? {}, res, controller.signal);
 });
 
-if (process.env.NODE_ENV === "production") {
+if (PROD) {
   const dist = path.resolve(here, "../dist");
   app.use(express.static(dist));
   app.get(/^(?!\/api).*/, (_req, res) => res.sendFile(path.join(dist, "index.html")));
@@ -144,6 +146,6 @@ if (process.env.NODE_ENV === "production") {
 app.listen(PORT, () => {
   const mode = FORCE_DEMO ? " (mode DÉMO forcé)" : "";
   console.log(`API marché prête sur http://localhost:${PORT}${mode}`);
-  if (process.env.NODE_ENV === "production") console.log(`Application : http://localhost:${PORT}`);
+  if (PROD) console.log(`Application : http://localhost:${PORT}`);
   if (!aiConfigured()) console.log("Astuce : ajoutez ANTHROPIC_API_KEY dans .env pour activer l'analyse par Claude.");
 });
