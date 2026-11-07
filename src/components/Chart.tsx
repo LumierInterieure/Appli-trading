@@ -8,8 +8,10 @@ import {
   HistogramSeries,
   type IChartApi,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
   LineSeries,
   LineStyle,
+  type Logical,
   type MouseEventParams,
   PriceScaleMode,
   type SeriesMarker,
@@ -18,11 +20,13 @@ import {
   TickMarkType,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { Bar } from "../../shared/types.ts";
-import type { Drawing, Marker, Pt } from "../lib/drawings.ts";
+import type { Marker, Pt } from "../lib/drawings.ts";
+import { DrawLayer, type Shape } from "../lib/drawLayer.ts";
 import { fmtPct } from "../lib/format.ts";
 import { bollinger, ema, macd, type Num, rsi, sma } from "../lib/indicators.ts";
+import { DEFAULT_STYLE, DRAW_TOOL_INFO, type DrawTool, manualShape, TOOL_POINTS } from "../lib/manual.ts";
 import { INDICATOR_INFO, type ChartSettings } from "../lib/state.ts";
 import { closeAtOrBefore } from "../lib/stats.ts";
 
@@ -37,44 +41,45 @@ export interface SeriesInput {
   fmtRaw: (v: number) => string;
 }
 
-export interface Measure {
-  id: string;
-  a: Pt;
-  b: Pt;
-}
+export type PlaceTool = Exclude<DrawTool, "cursor">;
 
 interface Props {
   main: SeriesInput | null;
   overlays: SeriesInput[];
   settings: ChartSettings;
-  drawings: Drawing[];
-  measures: Measure[];
-  pendingPoint: Pt | null;
+  /** Toutes les figures à dessiner (outils automatiques, dessins manuels, zone), en unité affichée. */
+  shapes: Shape[];
+  markers: Marker[];
+  /** Dates futures à réserver sur l'axe du temps (projection). */
+  futureTimes: number[];
   /** Derniers prix temps réel (bruts) par clé d'actif. */
   live: Record<string, number | undefined>;
-  interaction: "none" | "measure" | "rebase";
-  onChartClick: (p: Pt) => void;
+  drawTool: DrawTool;
+  magnet: boolean;
+  onPlace: (tool: PlaceTool, points: Pt[]) => void;
+  /** Clic sur une figure (null = clic dans le vide). Position relative au graphique. */
+  onShapeClick: (id: string | null, pos: { x: number; y: number } | null) => void;
+  onShapeMove: (id: string, points: Pt[]) => void;
   onRemoveOverlay: (key: string) => void;
   onMakeMain: (key: string) => void;
-  structureKey: string;
+  /** Changement de période : on recadre tout. */
+  fitKey: string;
+  /** Changement d'actif : on garde le zoom, recollé à la dernière bougie. */
+  assetKey: string;
+  /** Changement d'unité (actif, relatif/absolu) : échelle verticale automatique. */
+  unitKey: string;
+  /** Incrémenté par le bouton « Recentrer ». */
+  resetNonce: number;
   barSeconds: number;
   watermark: string;
+  valueFmt: (v: number) => string;
+  children?: ReactNode;
 }
 
 const UP = "#089981";
 const DOWN = "#f23645";
-const STYLE = { solid: LineStyle.Solid, dashed: LineStyle.Dashed, dotted: LineStyle.Dotted } as const;
 
 const t = (x: number) => x as UTCTimestamp;
-
-function lineData(points: Pt[]) {
-  const seen = new Set<number>();
-  return points
-    .filter((p) => Number.isFinite(p.value))
-    .sort((a, b) => a.time - b.time)
-    .filter((p) => (seen.has(p.time) ? false : (seen.add(p.time), true)))
-    .map((p) => ({ time: t(p.time), value: p.value }));
-}
 
 function indicatorData(bars: Bar[], values: Num[]) {
   const out: { time: UTCTimestamp; value: number }[] = [];
@@ -102,17 +107,29 @@ interface LegendRow {
   isMain: boolean;
 }
 
+interface ViewState {
+  fitKey: string;
+  assetKey: string;
+  unitKey: string;
+  resetNonce: number;
+  lastTime: number;
+}
+
 export function Chart(props: Props) {
+  const wrap = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const mainSeries = useRef<ISeriesApi<SeriesType> | null>(null);
   const overlaySeries = useRef<Map<string, ISeriesApi<SeriesType>>>(new Map());
   const allSeries = useRef<ISeriesApi<SeriesType>[]>([]);
-  const lastStructure = useRef<string>("");
+  const view = useRef<ViewState | null>(null);
   const watermarkRef = useRef<{ detach: () => void } | null>(null);
+  const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const layer = useRef(new DrawLayer());
   const propsRef = useRef(props);
   propsRef.current = props;
   const [hoverTime, setHoverTime] = useState<number | null>(null);
+  const [placing, setPlacing] = useState(0);
 
   // --- création du graphique (une fois)
   useEffect(() => {
@@ -124,7 +141,7 @@ export function Chart(props: Props) {
       crosshair: { mode: CrosshairMode.Normal },
       rightPriceScale: { borderColor: "#1f2633", scaleMargins: { top: 0.08, bottom: 0.08 } },
       leftPriceScale: { borderColor: "#1f2633", visible: false },
-      timeScale: { borderColor: "#1f2633", rightOffset: 6, timeVisible: false },
+      timeScale: { borderColor: "#1f2633", rightOffset: 8, timeVisible: false, shiftVisibleRangeOnNewBar: true },
       localization: { locale: "fr-FR" },
     });
     chartRef.current = chart;
@@ -133,42 +150,40 @@ export function Chart(props: Props) {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => setHoverTime(param.time != null ? (param.time as number) : null));
     };
-    const onClick = (param: MouseEventParams<Time>) => {
-      const p = propsRef.current;
-      if (p.interaction === "none" || !param.point || !mainSeries.current) return;
-      let time = param.time as number | undefined;
-      if (time == null) {
-        const ct = chart.timeScale().coordinateToTime(param.point.x);
-        time = ct != null ? (ct as number) : undefined;
-      }
-      const value = mainSeries.current.coordinateToPrice(param.point.y);
-      if (time == null || value == null) return;
-      p.onChartClick({ time, value });
-    };
     chart.subscribeCrosshairMove(onMove);
-    chart.subscribeClick(onClick);
     return () => {
       cancelAnimationFrame(raf);
       chart.unsubscribeCrosshairMove(onMove);
-      chart.unsubscribeClick(onClick);
       chart.remove();
       chartRef.current = null;
     };
   }, []);
 
-  // --- construction des séries (à chaque changement de données / réglages / outils)
-  const { main, overlays, settings, drawings, measures, pendingPoint, structureKey, barSeconds, watermark } = props;
+  // --- construction des séries (données, réglages, indicateurs)
+  const { main, overlays, settings, futureTimes, fitKey, assetKey, unitKey, resetNonce, barSeconds, watermark, valueFmt } = props;
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
-    const prevRange = chart.timeScale().getVisibleRange();
-    const fullKey = `${structureKey}|${main?.raw[0]?.time ?? ""}`;
-    const sameStructure = lastStructure.current === fullKey;
+    const ts = chart.timeScale();
+
+    // 1) mémorise la vue actuelle (position, zoom, échelle verticale) avant de reconstruire
+    const prev = view.current;
+    const logicalOf = (time: number): number | null => {
+      const x = ts.timeToCoordinate(time as Time);
+      return x == null ? null : ts.coordinateToLogical(x);
+    };
+    const prevLogical = ts.getVisibleLogicalRange();
+    const prevTimeRange = ts.getVisibleRange();
+    const prevLastLogical = prev ? logicalOf(prev.lastTime) : null;
+    const rightScale = chart.priceScale("right");
+    const prevAuto = rightScale.options().autoScale;
+    const prevPrice = rightScale.getVisibleRange();
 
     for (const s of allSeries.current) chart.removeSeries(s);
     allSeries.current = [];
     overlaySeries.current.clear();
     mainSeries.current = null;
+    markersRef.current = null;
     for (let i = chart.panes().length - 1; i > 0; i--) {
       try { chart.removePane(i); } catch { /* déjà supprimé */ }
     }
@@ -220,11 +235,19 @@ export function Chart(props: Props) {
       ms.setData(bars.map((b) => ({ time: t(b.time), value: b.close })));
     }
     mainSeries.current = ms;
-    chart.priceScale("right").applyOptions({
-      mode: settings.logScale && !relative ? PriceScaleMode.Logarithmic : PriceScaleMode.Normal,
-    });
-    if (relative) {
-      ms.createPriceLine({ price: 0, color: "#5d606b", lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: false, title: "" });
+    rightScale.applyOptions({ mode: settings.logScale && !relative ? PriceScaleMode.Logarithmic : PriceScaleMode.Normal });
+    if (relative) ms.createPriceLine({ price: 0, color: "#5d606b", lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: false, title: "" });
+
+    // calque de dessin + repères
+    layer.current.setContext(bars, barSeconds, valueFmt);
+    ms.attachPrimitive(layer.current);
+    markersRef.current = createSeriesMarkers(ms, []);
+
+    // dates futures réservées (projection) : série « vide »
+    if (futureTimes.length) {
+      const last = bars[bars.length - 1].time;
+      const ws = add(chart.addSeries(LineSeries, { lineVisible: false, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }));
+      ws.setData(futureTimes.filter((x) => x > last).map((x) => ({ time: t(x) })));
     }
 
     // superpositions
@@ -288,54 +311,242 @@ export function Chart(props: Props) {
     panes[0]?.setStretchFactor(3);
     for (let i = 1; i < panes.length; i++) panes[i].setStretchFactor(1);
 
-    // dessins automatiques
-    const markers: Marker[] = [];
-    for (const d of drawings) {
-      if (d.kind === "priceLine") {
-        ms.createPriceLine({ price: d.price, color: d.color, lineWidth: (d.width ?? 1) as 1, lineStyle: STYLE[d.style ?? "dashed"], axisLabelVisible: true, title: d.title });
-      } else if (d.kind === "markers") {
-        markers.push(...d.markers);
-      } else {
-        const data = lineData(d.points);
-        if (data.length < 2) continue;
-        const s = add(chart.addSeries(LineSeries, {
-          color: d.color, lineWidth: (d.width ?? 1) as 1, lineStyle: STYLE[d.style ?? "solid"], priceLineVisible: false,
-          lastValueVisible: !!d.showLabel, title: d.showLabel ? d.label ?? "" : "", crosshairMarkerVisible: false, priceFormat: mainFormat,
-          ...(d.autoscale ? {} : { autoscaleInfoProvider: () => null }),
-        }));
-        s.setData(data);
-      }
-    }
-    // mesures (outil règle)
-    for (const m of measures) {
-      const data = lineData([m.a, m.b]);
-      const change = relative ? m.b.value - m.a.value : m.a.value !== 0 ? (m.b.value / m.a.value - 1) * 100 : 0;
-      const color = change >= 0 ? "#22c55e" : "#f43f5e";
-      if (data.length >= 2) {
-        add(chart.addSeries(LineSeries, { color, lineWidth: 2, lineStyle: LineStyle.Solid, priceLineVisible: false, lastValueVisible: true, title: `${relative ? `${change >= 0 ? "+" : ""}${change.toFixed(2)} pts` : fmtPct(change)}`, crosshairMarkerVisible: false, priceFormat: mainFormat, autoscaleInfoProvider: () => null })).setData(data);
-      }
-    }
-    if (pendingPoint) markers.push({ time: pendingPoint.time, position: "inBar", shape: "circle", color: "#f7c948", text: "A" });
-    const barTimes = new Set(bars.map((b) => b.time));
-    const validMarkers = markers
-      .map((m) => ({ ...m, time: barTimes.has(m.time) ? m.time : closeAtOrBefore(bars, m.time)?.time ?? m.time }))
-      .sort((a, b) => a.time - b.time)
-      .map((m) => ({ ...m, time: t(m.time) }) as SeriesMarker<Time>);
-    if (validMarkers.length) createSeriesMarkers(ms, validMarkers);
-
     watermarkRef.current?.detach();
     watermarkRef.current = createTextWatermark(chart.panes()[0], {
       horzAlign: "center", vertAlign: "center",
       lines: [{ text: watermark, color: "rgba(178,181,190,0.06)", fontSize: 56, fontStyle: "bold" }],
     });
 
-    if (sameStructure && prevRange) {
-      try { chart.timeScale().setVisibleRange(prevRange); } catch { chart.timeScale().fitContent(); }
-    } else {
-      chart.timeScale().fitContent();
+    // 2) restaure la vue : seul l'utilisateur déplace le graphique
+    const lastTime = bars[bars.length - 1].time;
+    const newLast = logicalOf(lastTime);
+    const fit = !prev || prev.fitKey !== fitKey || prev.resetNonce !== resetNonce;
+    if (fit) {
+      ts.fitContent();
+    } else if (prevLogical && prevLastLogical != null && newLast != null) {
+      const width = prevLogical.to - prevLogical.from;
+      const anchoredRight = prevLogical.to >= prevLastLogical - 0.5;
+      if (anchoredRight || prev.assetKey !== assetKey) {
+        // vue collée à la dernière bougie : même zoom, même marge à droite
+        const gap = prevLogical.to - prevLastLogical;
+        ts.setVisibleLogicalRange({ from: (newLast + gap - width) as Logical, to: (newLast + gap) as Logical });
+      } else if (prevTimeRange) {
+        // vue dans l'historique : mêmes dates
+        try { ts.setVisibleRange(prevTimeRange); } catch { ts.setVisibleLogicalRange(prevLogical); }
+      }
     }
-    lastStructure.current = fullKey;
-  }, [main, overlays, settings, drawings, measures, pendingPoint, structureKey, barSeconds, watermark]);
+    const unitChanged = !prev || prev.unitKey !== unitKey;
+    if (fit || unitChanged || prevAuto || !prevPrice) {
+      rightScale.setAutoScale(true);
+    } else {
+      rightScale.setAutoScale(false);
+      rightScale.setVisibleRange(prevPrice);
+    }
+    view.current = { fitKey, assetKey, unitKey, resetNonce, lastTime };
+  }, [main, overlays, settings, futureTimes, fitKey, assetKey, unitKey, resetNonce, barSeconds, watermark, valueFmt]);
+
+  // --- figures et repères : mis à jour sans reconstruire les séries (la vue ne bouge pas)
+  const { shapes, markers } = props;
+  useEffect(() => {
+    layer.current.setShapes(shapes);
+  }, [shapes, main, settings]);
+
+  useEffect(() => {
+    const plugin = markersRef.current;
+    const bars = main?.display;
+    if (!plugin || !bars?.length) return;
+    const barTimes = new Set(bars.map((b) => b.time));
+    plugin.setMarkers(
+      markers
+        .map((m) => ({ ...m, time: barTimes.has(m.time) ? m.time : closeAtOrBefore(bars, m.time)?.time ?? m.time }))
+        .sort((a, b) => a.time - b.time)
+        .map((m) => ({ ...m, time: t(m.time) }) as SeriesMarker<Time>),
+    );
+  }, [markers, main, settings]);
+
+  // --- interactions : tracé, sélection, déplacement des dessins
+  useEffect(() => {
+    const el = wrap.current;
+    if (!el) return;
+    const pts: Pt[] = [];
+    let drag: { id: string; handle: number; start: Pt; orig: Pt[]; moved: boolean; sx: number; sy: number; next: Pt[] | null } | null = null;
+    let swallowClick = false;
+    let hoverRaf = 0;
+
+    const local = (clientX: number, clientY: number) => {
+      const chart = chartRef.current;
+      const canvas = box.current;
+      if (!chart || !canvas) return null;
+      const r = canvas.getBoundingClientRect();
+      const left = chart.priceScale("left").width();
+      const right = chart.priceScale("right").width();
+      const x = clientX - r.left - left;
+      const y = clientY - r.top;
+      const paneH = chart.panes()[0]?.getHeight() ?? r.height;
+      const inPane = x >= 0 && x <= r.width - left - right && y >= 0 && y <= paneH;
+      return { x, y, inPane, rel: { x: clientX - (wrap.current?.getBoundingClientRect().left ?? 0), y: clientY - (wrap.current?.getBoundingClientRect().top ?? 0) } };
+    };
+
+    const preview = (mouse: Pt | null) => {
+      const p = propsRef.current;
+      const tool = p.drawTool;
+      if (tool === "cursor") { layer.current.setPreview([]); return; }
+      const all = mouse ? [...pts, mouse] : [...pts];
+      if (!all.length || (tool === "rebase")) { layer.current.setPreview([]); return; }
+      const kind = tool === "zone" ? "zone" : tool;
+      const st = tool === "zone" ? { color: "#2962ff", width: 1, style: "dashed" as const } : DEFAULT_STYLE[tool];
+      const shape = manualShape(
+        { id: "__preview", kind, points: all, color: st.color, width: st.width, style: st.style, extendRight: "extendRight" in st ? st.extendRight : undefined },
+        { relative: p.settings.mode === "relative", fmt: p.valueFmt, barSeconds: p.barSeconds, source: "preview" },
+      );
+      layer.current.setPreview([shape]);
+    };
+
+    const down = (clientX: number, clientY: number, e: Event) => {
+      // clics dans les éléments posés sur le graphique (menu, légende) : on les laisse passer
+      if (e.target instanceof Element && e.target.closest(".draw-menu, .legend, .chart-hint")) return;
+      const p = propsRef.current;
+      const pos = local(clientX, clientY);
+      if (!pos || !pos.inPane || !mainSeries.current) return;
+      // outil de dessin actif : chaque clic pose un point
+      if (p.drawTool !== "cursor") {
+        e.stopPropagation();
+        e.preventDefault();
+        const pt = layer.current.toData(pos.x, pos.y, p.magnet);
+        if (!pt) return;
+        pts.push(pt);
+        if (pts.length >= TOOL_POINTS[p.drawTool]) {
+          const done = pts.splice(0);
+          layer.current.setPreview([]);
+          setPlacing(0);
+          p.onPlace(p.drawTool, done);
+        } else {
+          setPlacing(pts.length);
+          preview(pt);
+        }
+        return;
+      }
+      // curseur : sélection / déplacement d'une figure
+      const hit = layer.current.pick(pos.x, pos.y);
+      if (!hit) {
+        p.onShapeClick(null, null);
+        return;
+      }
+      e.stopPropagation();
+      e.preventDefault();
+      const shape = p.shapes.find((s) => s.id === hit.id);
+      const start = layer.current.toData(pos.x, pos.y, false);
+      if (!shape || !start) return;
+      drag = { id: hit.id, handle: shape.editable ? hit.handle : -2, start, orig: shape.points, moved: false, sx: clientX, sy: clientY, next: null };
+      chartRef.current?.applyOptions({ handleScroll: false, handleScale: false });
+    };
+
+    const move = (clientX: number, clientY: number) => {
+      const p = propsRef.current;
+      const pos = local(clientX, clientY);
+      if (drag) {
+        if (!pos) return;
+        if (Math.hypot(clientX - drag.sx, clientY - drag.sy) > 3) drag.moved = true;
+        if (!drag.moved || drag.handle === -2) return;
+        const cur = layer.current.toData(pos.x, pos.y, p.magnet && drag.handle >= 0);
+        if (!cur) return;
+        const dt = cur.time - drag.start.time;
+        const dv = cur.value - drag.start.value;
+        const next = drag.handle >= 0
+          ? drag.orig.map((q, i) => (i === drag!.handle ? cur : q))
+          : drag.orig.map((q) => ({ time: q.time + dt, value: q.value + dv }));
+        drag.next = next;
+        layer.current.setOverride(drag.id, next);
+        return;
+      }
+      if (!pos) return;
+      if (p.drawTool !== "cursor") {
+        preview(pos.inPane ? layer.current.toData(pos.x, pos.y, p.magnet) : null);
+        return;
+      }
+      // survol : curseur « main » au-dessus d'une figure
+      cancelAnimationFrame(hoverRaf);
+      hoverRaf = requestAnimationFrame(() => {
+        const hit = pos.inPane ? layer.current.pick(pos.x, pos.y) : null;
+        const editable = hit && p.shapes.find((s) => s.id === hit.id)?.editable;
+        el.style.cursor = hit ? (hit.handle >= 0 && editable ? "grab" : editable ? "move" : "pointer") : "";
+      });
+    };
+
+    const up = (clientX: number, clientY: number) => {
+      if (!drag) return;
+      const d = drag;
+      drag = null;
+      chartRef.current?.applyOptions({ handleScroll: true, handleScale: true });
+      const p = propsRef.current;
+      if (d.moved && d.next && d.handle !== -2) {
+        swallowClick = true;
+        p.onShapeMove(d.id, d.next);
+        // l'override est retiré quand les nouvelles figures arrivent (voir effet ci-dessous)
+      } else {
+        layer.current.setOverride(d.id, null);
+        const pos = local(clientX, clientY);
+        p.onShapeClick(d.id, pos ? pos.rel : null);
+      }
+    };
+
+    const onMouseDown = (e: MouseEvent) => { if (e.button === 0) down(e.clientX, e.clientY, e); };
+    const onMouseMove = (e: MouseEvent) => move(e.clientX, e.clientY);
+    const onMouseUp = (e: MouseEvent) => up(e.clientX, e.clientY);
+    const onTouchStart = (e: TouchEvent) => { const tch = e.touches[0]; if (tch) down(tch.clientX, tch.clientY, e); };
+    const onTouchMove = (e: TouchEvent) => { const tch = e.touches[0]; if (tch) move(tch.clientX, tch.clientY); };
+    const onTouchEnd = (e: TouchEvent) => { const tch = e.changedTouches[0]; if (tch) up(tch.clientX, tch.clientY); };
+    const onClick = (e: MouseEvent) => { if (swallowClick) { swallowClick = false; e.stopPropagation(); } };
+    const onLeave = () => { if (propsRef.current.drawTool !== "cursor") preview(null); };
+    const onContext = (e: MouseEvent) => {
+      // clic droit sur une figure : ouvre son menu (comme TradingView)
+      if (e.target instanceof Element && e.target.closest(".draw-menu, .legend")) return;
+      const pos = local(e.clientX, e.clientY);
+      if (!pos?.inPane) return;
+      const hit = layer.current.pick(pos.x, pos.y);
+      if (!hit) return;
+      e.preventDefault();
+      propsRef.current.onShapeClick(hit.id, pos.rel);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { pts.length = 0; setPlacing(0); layer.current.setPreview([]); }
+    };
+
+    el.addEventListener("mousedown", onMouseDown, true);
+    el.addEventListener("touchstart", onTouchStart, { capture: true, passive: false });
+    el.addEventListener("click", onClick, true);
+    el.addEventListener("contextmenu", onContext);
+    el.addEventListener("mouseleave", onLeave);
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    window.addEventListener("touchmove", onTouchMove, { passive: true });
+    window.addEventListener("touchend", onTouchEnd);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      cancelAnimationFrame(hoverRaf);
+      el.removeEventListener("mousedown", onMouseDown, true);
+      el.removeEventListener("touchstart", onTouchStart, true);
+      el.removeEventListener("click", onClick, true);
+      el.removeEventListener("contextmenu", onContext);
+      el.removeEventListener("mouseleave", onLeave);
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", onTouchEnd);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, []);
+
+  // changement d'outil : on abandonne le tracé en cours
+  useEffect(() => {
+    layer.current.setPreview([]);
+    setPlacing(0);
+  }, [props.drawTool]);
+
+  // nouvelles figures reçues : on retire les positions provisoires de glisser-déposer
+  useEffect(() => {
+    for (const s of shapes) layer.current.setOverride(s.id, null);
+  }, [shapes]);
 
   // --- mise à jour temps réel de la dernière bougie (sans tout reconstruire)
   const { live } = props;
@@ -378,8 +589,9 @@ export function Chart(props: Props) {
     return rows;
   }, [hoverTime, main, overlays, settings.mode, settings.chartType, live]);
 
+  const tool = props.drawTool;
   return (
-    <div className={`chart-wrap ${props.interaction !== "none" ? "crosshair-mode" : ""}`}>
+    <div ref={wrap} className={`chart-wrap ${tool !== "cursor" ? "crosshair-mode" : ""}`}>
       <div ref={box} className="chart-canvas" />
       <div className="legend">
         {legend.map((r) => (
@@ -399,13 +611,13 @@ export function Chart(props: Props) {
           </div>
         ))}
       </div>
-      {props.interaction !== "none" && (
+      {tool !== "cursor" && (
         <div className="chart-hint">
-          {props.interaction === "measure"
-            ? pendingPoint ? "Cliquez le point d'arrivée (B)" : "Règle : cliquez le point de départ (A)"
-            : "Cliquez une date pour rebaser la comparaison à 0 %"}
+          <b>{DRAW_TOOL_INFO[tool].label}</b> — {DRAW_TOOL_INFO[tool].hint[Math.min(placing, DRAW_TOOL_INFO[tool].hint.length - 1)]}
+          <span className="muted"> · Échap pour annuler</span>
         </div>
       )}
+      {props.children}
     </div>
   );
 }

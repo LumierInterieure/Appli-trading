@@ -17,7 +17,7 @@ export const TOOL_INFO: Record<ToolId, { label: string; short: string; help: str
   pivotPoints: { label: "Points pivots", short: "Pivots", help: "Points pivots classiques (P, R1-R3, S1-S3) calculés sur la bougie précédente de la période supérieure." },
 };
 
-const FIB_COLORS: Record<string, string> = {
+export const FIB_COLORS: Record<string, string> = {
   "0": "#9598a1", "0.236": "#f23645", "0.382": "#ff9800", "0.5": "#4caf50", "0.618": "#089981",
   "0.786": "#00bcd4", "1": "#9598a1", "1.272": "#2962ff", "1.414": "#7e57c2", "1.618": "#e91e63", "2": "#ab47bc", "2.618": "#f23645", "3.618": "#9c27b0",
 };
@@ -30,14 +30,24 @@ export interface ToolContext {
   barSeconds: number;
   alwaysOpen: boolean;
   forecastHorizon: number;
+  /**
+   * Données complètes quand `bars` est restreint à une zone d'analyse choisie par
+   * l'utilisateur : les tracés sont alors prolongés jusqu'à la dernière bougie.
+   */
+  full?: Bar[];
+  /** Index de bars[0] dans full. */
+  offset?: number;
+}
+
+/** Fin des données complètes (date, dernier cours, nombre de bougies, décalage de la zone). */
+function tail(ctx: ToolContext) {
+  const f = ctx.full ?? ctx.bars;
+  const last = f[f.length - 1];
+  return { full: f, endTime: last.time, lastClose: last.close, N: f.length, offset: ctx.offset ?? 0 };
 }
 
 function pct(r: number) {
   return `${(r * 100).toFixed(1).replace(".0", "")} %`;
-}
-
-function hseg(id: string, from: number, to: number, value: number, color: string, label: string, style: "solid" | "dashed" | "dotted" = "solid", autoscale = true): Drawing {
-  return { kind: "line", id, points: [{ time: from, value }, { time: to, value }], color, width: 1, style, label, showLabel: true, autoscale };
 }
 
 function confirmedPivots(ctx: ToolContext, sens?: Sensitivity) {
@@ -66,18 +76,18 @@ export function fibRetracement(ctx: ToolContext): ToolOutput {
   }
   const up = b.price > a.price;
   const diff = b.price - a.price;
-  const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.272, 1.618];
-  const end = bars[bars.length - 1].time;
-  const drawings: Drawing[] = [];
+  const levelsR = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.272, 1.618];
+  const last = tail(ctx).lastClose;
   const lines: ToolReport["lines"] = [];
-  const last = bars[bars.length - 1].close;
-  for (const r of levels) {
+  const levels = levelsR.map((r) => {
     const v = b.price - diff * r;
     const color = FIB_COLORS[String(r)] ?? "#9598a1";
-    drawings.push(hseg(`fibR-${r}`, a.time, end, v, color, `Fib ${pct(r)}`, r === 0 || r === 1 ? "solid" : "dashed", r <= 1));
     lines.push({ label: pct(r), value: fmt(v), color });
-  }
-  drawings.push({ kind: "line", id: "fibR-leg", points: [{ time: a.time, value: a.price }, { time: b.time, value: b.price }], color: "#787b86", width: 1, style: "dotted" });
+    return { ratio: r, value: v, color };
+  });
+  const drawings: Drawing[] = [
+    { kind: "fib", id: "fibR", anchors: [{ time: a.time, value: a.price }, { time: b.time, value: b.price }], levels, color: "#787b86", label: "Retracement auto", autoscale: true },
+  ];
   const retr = diff !== 0 ? (b.price - last) / diff : 0;
   return {
     drawings,
@@ -95,7 +105,7 @@ export function fibRetracement(ctx: ToolContext): ToolOutput {
  * (entre minR et maxR de AB), et C non invalidé (le prix n'a pas clôturé
  * au-delà de C depuis).
  */
-function findABC(pivots: Pivot[], bars: Bar[], minR = 0.2, maxR = 1.0): [Pivot, Pivot, Pivot] | null {
+function findABC(pivots: Pivot[], full: Bar[], offset: number, minR = 0.2, maxR = 1.0): [Pivot, Pivot, Pivot] | null {
   const conf = pivots.filter((p) => p.confirmed);
   for (let end = conf.length - 1; end >= 2; end--) {
     const C = conf[end], B = conf[end - 1], A = conf[end - 2];
@@ -105,8 +115,9 @@ function findABC(pivots: Pivot[], bars: Bar[], minR = 0.2, maxR = 1.0): [Pivot, 
     if (r < minR || r > maxR) continue;
     const bull = B.price > A.price;
     let valid = true;
-    for (let k = C.index + 1; k < bars.length; k++) {
-      if (bull ? bars[k].close < C.price : bars[k].close > C.price) { valid = false; break; }
+    // C ne doit pas avoir été cassé depuis, y compris après la zone d'analyse
+    for (let k = C.index + offset + 1; k < full.length; k++) {
+      if (bull ? full[k].close < C.price : full[k].close > C.price) { valid = false; break; }
     }
     if (valid) return [A, B, C];
   }
@@ -114,12 +125,12 @@ function findABC(pivots: Pivot[], bars: Bar[], minR = 0.2, maxR = 1.0): [Pivot, 
 }
 
 export function fibExtension(ctx: ToolContext): ToolOutput {
-  const { bars, fmt } = ctx;
+  const { fmt } = ctx;
   let abc: [Pivot, Pivot, Pivot] | null = null;
   const order: Sensitivity[] = ctx.sensitivity === "large" ? ["large", "normal", "fine"] : ctx.sensitivity === "fine" ? ["fine", "normal", "large"] : ["normal", "large", "fine"];
   for (const [minR, maxR] of [[0.2, 1.0], [0.1, 1.6]] as const) {
     for (const s of order) {
-      abc = findABC(confirmedPivots(ctx, s), bars, minR, maxR);
+      abc = findABC(confirmedPivots(ctx, s), tail(ctx).full, tail(ctx).offset, minR, maxR);
       if (abc) break;
     }
     if (abc) break;
@@ -128,28 +139,29 @@ export function fibExtension(ctx: ToolContext): ToolOutput {
   const [A, B, C] = abc;
   const move = B.price - A.price;
   const bull = move > 0;
-  const levels = [0, 0.382, 0.618, 1, 1.272, 1.414, 1.618, 2, 2.618];
-  const end = bars[bars.length - 1].time;
+  const levelsE = [0, 0.382, 0.618, 1, 1.272, 1.414, 1.618, 2, 2.618];
   const drawings: Drawing[] = [
-    { kind: "line", id: "fibE-ab", points: [{ time: A.time, value: A.price }, { time: B.time, value: B.price }], color: "#2962ff", width: 2, style: "solid" },
-    { kind: "line", id: "fibE-bc", points: [{ time: B.time, value: B.price }, { time: C.time, value: C.price }], color: "#2962ff", width: 2, style: "dashed" },
     { kind: "markers", id: "fibE-m", markers: [
       { time: A.time, position: A.type === "H" ? "aboveBar" : "belowBar", shape: "circle", color: "#2962ff", text: "A" },
       { time: B.time, position: B.type === "H" ? "aboveBar" : "belowBar", shape: "circle", color: "#2962ff", text: "B" },
       { time: C.time, position: C.type === "H" ? "aboveBar" : "belowBar", shape: "circle", color: "#2962ff", text: "C" },
     ] },
   ];
-  const last = bars[bars.length - 1].close;
+  const last = tail(ctx).lastClose;
   const lines: ToolReport["lines"] = [];
-  let nextTarget: { r: number; v: number } | null = null;
-  for (const r of levels) {
+  let nextTarget = null as { r: number; v: number } | null;
+  const levels = levelsE.map((r) => {
     const v = C.price + move * r;
     const color = FIB_COLORS[String(r)] ?? "#9598a1";
-    drawings.push(hseg(`fibE-${r}`, C.time, end, v, color, `Ext ${pct(r)}`, r === 1 || r === 1.618 ? "solid" : "dashed", r <= 1.618));
     const reached = bull ? last >= v : last <= v;
     lines.push({ label: `${pct(r)}${reached ? " ✓" : ""}`, value: fmt(v), color });
     if (!reached && !nextTarget && r > 0) nextTarget = { r, v };
-  }
+    return { ratio: r, value: v, color };
+  });
+  drawings.unshift({
+    kind: "fib", id: "fibE", color: "#2962ff", label: "Extension auto", autoscale: true,
+    anchors: [{ time: A.time, value: A.price }, { time: B.time, value: B.price }, { time: C.time, value: C.price }], levels,
+  });
   const retr = Math.abs(C.price - B.price) / Math.abs(move);
   return {
     drawings,
@@ -170,11 +182,10 @@ export function trendlines(ctx: ToolContext): ToolOutput {
   const { bars, fmt } = ctx;
   const piv = confirmedPivots(ctx).filter((p) => p.confirmed);
   const n = bars.length;
-  const end = bars[n - 1].time;
+  const { endTime: end, lastClose: last, N, offset } = tail(ctx);
   const tol = (lastValid(atr(bars, 14)) ?? 0) * 0.3;
   const drawings: Drawing[] = [];
   const lines: ToolReport["lines"] = [];
-  const last = bars[n - 1].close;
   const build = (type: "H" | "L") => {
     const ps = piv.filter((p) => p.type === type).slice(-8);
     // toutes les paires valides (droite non cassée en clôture, hors dernière bougie),
@@ -190,7 +201,8 @@ export function trendlines(ctx: ToolContext): ToolOutput {
           if (type === "H" ? bars[k].close > v + tol : bars[k].close < v - tol) { ok = false; break; }
         }
         if (!ok) continue;
-        const vEnd = p1.price + slope * (n - 1 - p1.index);
+        // projection jusqu'à la dernière bougie (au-delà de la zone d'analyse si besoin)
+        const vEnd = p1.price + slope * (N - 1 - (p1.index + offset));
         const unit = tol / 0.3 || Math.abs(last) * 0.01 || 1;
         const score = Math.abs(vEnd - last) / unit + ((n - 1 - p2.index) / n) * 6 + (p2.index - p1.index < 5 ? 3 : 0);
         if (!best || score < best.score) best = { p1, slope, vEnd, score };
@@ -224,7 +236,7 @@ export function supportResistance(ctx: ToolContext): ToolOutput {
       c.last = Math.max(c.last, p.index);
     } else clusters.push({ price: p.price, touches: 1, last: p.index });
   }
-  const last = bars[bars.length - 1].close;
+  const last = tail(ctx).lastClose;
   const n = bars.length;
   const score = (c: (typeof clusters)[number]) => c.touches * 2 + (c.last / n) * 2;
   const strong = clusters.filter((c) => c.touches >= 2 || c.last > n * 0.75);
@@ -247,7 +259,9 @@ export function regressionChannel(ctx: ToolContext): ToolOutput {
   const { bars, fmt } = ctx;
   const closes = bars.map((b) => b.close);
   const { a, b, sd, r2 } = linreg(closes);
-  const mk = (k: number): Pt[] => [{ time: bars[0].time, value: a + k * sd }, { time: bars[bars.length - 1].time, value: a + b * (bars.length - 1) + k * sd }];
+  const tl = tail(ctx);
+  const endIdx = tl.N - 1 - tl.offset;
+  const mk = (k: number): Pt[] => [{ time: bars[0].time, value: a + k * sd }, { time: tl.endTime, value: a + b * endIdx + k * sd }];
   const drawings: Drawing[] = [
     { kind: "line", id: "ch-mid", points: mk(0), color: "#ff9800", width: 1, style: "dashed", label: "Régression", showLabel: true },
     { kind: "line", id: "ch-u1", points: mk(1), color: "rgba(255,152,0,0.45)", width: 1, style: "dotted" },
@@ -255,8 +269,8 @@ export function regressionChannel(ctx: ToolContext): ToolOutput {
     { kind: "line", id: "ch-u2", points: mk(2), color: "#ff9800", width: 1, style: "solid", label: "+2σ", showLabel: true, autoscale: true },
     { kind: "line", id: "ch-l2", points: mk(-2), color: "#ff9800", width: 1, style: "solid", label: "−2σ", showLabel: true, autoscale: true },
   ];
-  const lastMid = a + b * (bars.length - 1);
-  const z = sd ? (closes[closes.length - 1] - lastMid) / sd : 0;
+  const lastMid = a + b * endIdx;
+  const z = sd ? (tl.lastClose - lastMid) / sd : 0;
   return {
     drawings,
     reports: [{
@@ -275,7 +289,9 @@ export function regressionChannel(ctx: ToolContext): ToolOutput {
 }
 
 export function forecastCone(ctx: ToolContext): ToolOutput {
-  const { bars, fmt, barSeconds, forecastHorizon, alwaysOpen } = ctx;
+  // la projection part toujours du dernier cours, sur tout l'historique
+  const { fmt, barSeconds, forecastHorizon, alwaysOpen } = ctx;
+  const bars = tail(ctx).full;
   const closes = bars.map((b) => b.close);
   // en mode relatif les valeurs sont des %, on revient en indice base 100 pour la simulation
   const isRelative = closes.some((c) => c <= 0);
@@ -350,7 +366,8 @@ export function rsiDivergences(ctx: ToolContext): ToolOutput {
 }
 
 export function pivotPoints(ctx: ToolContext): ToolOutput {
-  const { bars, fmt, barSeconds } = ctx;
+  const { fmt, barSeconds } = ctx;
+  const bars = tail(ctx).full;
   // période supérieure : jour pour l'intraday, semaine pour le journalier, mois au-delà
   const span = barSeconds < 86400 ? 86400 : barSeconds < 7 * 86400 ? 7 * 86400 : 30 * 86400;
   const key = (t: number) => (span === 86400 ? Math.floor(t / 86400) : span === 7 * 86400 ? Math.floor((t / 86400 + 3) / 7) : new Date(t * 1000).getUTCFullYear() * 12 + new Date(t * 1000).getUTCMonth());
@@ -389,6 +406,7 @@ export function runTools(tools: ToolId[], ctx: ToolContext): ToolOutput {
   for (const t of tools) {
     try {
       const r = RUNNERS[t](ctx);
+      for (const d of r.drawings) d.tool = t;
       out.drawings.push(...r.drawings);
       out.reports.push(...r.reports);
     } catch (e) {

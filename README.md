@@ -72,6 +72,10 @@ N'importe quel autre ticker Yahoo Finance (ASML, MC.PA, ^VIX…) s'ajoute depuis
   - **Canal de régression** (±1σ, ±2σ, z-score), **points pivots**, **divergences RSI**.
   - **Prévision** : cône Monte-Carlo (médiane, intervalles 50 % et 90 %, probabilité de hausse).
   - Sensibilité de détection des pivots réglable (fins / normaux / majeurs).
+- **Dessins à la main** (barre verticale à gauche du graphique, comme sur TradingView) : ligne de tendance, ligne horizontale, demi-droite, rectangle, retracement et extension de Fibonacci (3 points A-B-C), règle de mesure. Pendant le tracé, la figure se construit en transparence en suivant la souris ; l'aimant accroche les points aux prix d'ouverture / haut / bas / clôture.
+- **Clic sur n'importe quelle ligne** (dessinée ou automatique) : mini-menu à côté de la souris pour changer la couleur, l'épaisseur, le style, la prolonger, la supprimer ; une ligne automatique peut être masquée ou **figée** en dessin manuel. Les dessins se déplacent au glisser-déposer (poignées pour chaque point) et sont enregistrés par actif.
+- **Zone d'analyse** (🎯) : choisissez la période dans laquelle les algorithmes (Fibonacci, tendances, S/R, canal, divergences) doivent travailler ; les tracés restent prolongés jusqu'à aujourd'hui.
+- **La vue ne bouge que si vous la bougez** : zoom et position conservés quand vous changez un réglage, un outil, un indicateur, le mode relatif/absolu ou d'actif. Bouton ⤢ (ou Alt+R) pour recentrer.
 - **Indicateurs** : MM20/50/200, EMA21, Bollinger, volume, RSI et MACD (panneaux dédiés).
 - **Modèles** (⚡) : appliquent en un clic un ensemble d'outils + indicateurs (Swing, Objectifs, Tendance, Momentum, Comparaison) ; vous pouvez enregistrer les vôtres.
 - **Barre de commandes** (touche `/`) : dites simplement ce que vous voulez, par exemple
@@ -87,7 +91,18 @@ N'importe quel autre ticker Yahoo Finance (ASML, MC.PA, ^VIX…) s'ajoute depuis
   - *Analyse instantanée* (sans IA) : régime de marché risk-on / risk-off (S&P 500, tech, VIX, dollar, taux 10 ans, BTC, altcoins, Brent, ratio cuivre/or, small caps, courbe des taux), tableau de bord, prévisions à ~1 mois (biais, probabilité de hausse, fourchette 90 %, support/résistance) et signaux détectés automatiquement (golden/death cross, MM200, plus hauts/bas 52 semaines, RSI extrêmes, mouvements anormaux).
   - *Analyse IA (Claude)* : lecture rédigée du marché à partir de tous ces chiffres, en option avec l'actualité récente (recherche web), scénarios et objectifs, puis questions de suivi.
 
-Tous les réglages (actifs ajoutés, graphique, modèles, alertes) sont mémorisés dans le navigateur.
+Tous les réglages (actifs ajoutés, graphique, dessins, modèles, alertes) sont mémorisés dans le navigateur.
+
+### Raccourcis clavier
+
+| Touche | Action |
+|---|---|
+| `T` `H` `R` `F` `E` `M` `Z` | Tendance, horizontale, rectangle, Fibo retracement, Fibo extension, règle, zone d'analyse |
+| `Échap` | Annuler le tracé en cours / fermer le menu |
+| `Suppr` | Supprimer (ou masquer) la ligne sélectionnée |
+| `Ctrl+Z` | Annuler la dernière modification de dessin |
+| `Alt+R` | Recentrer le graphique |
+| `/` | Aller dans la barre de commandes |
 
 ## Limites à connaître
 

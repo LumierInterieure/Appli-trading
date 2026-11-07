@@ -1,16 +1,15 @@
 import { TIMEFRAMES } from "../../shared/assets.ts";
 import { INDICATOR_INFO, type ChartSettings, type IndicatorId, type Template } from "../lib/state.ts";
 import { TOOL_INFO, type ToolId } from "../lib/tools.ts";
+import type { DrawTool } from "../lib/manual.ts";
 
 interface Props {
   settings: ChartSettings;
   update: (patch: Partial<ChartSettings>) => void;
   toggleTool: (t: ToolId) => void;
   toggleIndicator: (i: IndicatorId) => void;
-  interaction: "none" | "measure" | "rebase";
-  setInteraction: (m: "none" | "measure" | "rebase") => void;
-  clearMeasures: () => void;
-  hasMeasures: boolean;
+  drawTool: DrawTool;
+  setDrawTool: (t: DrawTool) => void;
   templates: Template[];
   applyTemplate: (t: Template) => void;
   saveTemplate: () => void;
@@ -45,13 +44,12 @@ export function Toolbar(p: Props) {
             <label className="chk" title="Toutes les courbes sur la même échelle de prix"><input type="checkbox" checked={s.sharedScale} onChange={(e) => p.update({ sharedScale: e.target.checked })} /> Échelle commune</label>
           </>
         ) : (
-          <button className={`btn ${p.interaction === "rebase" ? "on" : ""}`} onClick={() => p.setInteraction(p.interaction === "rebase" ? "none" : "rebase")} title="Choisir la date de référence (0 %)">
+          <button className={`btn ${p.drawTool === "rebase" ? "on" : ""}`} onClick={() => p.setDrawTool(p.drawTool === "rebase" ? "cursor" : "rebase")} title="Choisir la date de référence (0 %)">
             ⇤ Rebaser{s.rebaseTime ? " ✓" : ""}
           </button>
         )}
         {s.mode === "relative" && s.rebaseTime && <button className="btn ghost" onClick={() => p.update({ rebaseTime: null })}>Base = début</button>}
-        <button className={`btn ${p.interaction === "measure" ? "on" : ""}`} onClick={() => p.setInteraction(p.interaction === "measure" ? "none" : "measure")} title="Mesurer la variation entre deux points">📏 Règle</button>
-        {p.hasMeasures && <button className="btn ghost" onClick={p.clearMeasures}>Effacer mesures</button>}
+        <button className={`btn ${p.drawTool === "measure" ? "on" : ""}`} onClick={() => p.setDrawTool(p.drawTool === "measure" ? "cursor" : "measure")} title="Mesurer la variation entre deux points (M)">📏 Règle</button>
         <div className="tb-spacer" />
         <select
           className="tpl"

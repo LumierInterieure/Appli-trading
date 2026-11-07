@@ -3,6 +3,7 @@ import { normalize } from "./format.ts";
 import type { Alert, ChartSettings, IndicatorId } from "./state.ts";
 import type { PerfPeriod } from "./stats.ts";
 import type { ToolId } from "./tools.ts";
+import { DRAW_TOOL_INFO, type DrawTool } from "./manual.ts";
 
 /**
  * Barre de commandes en langage naturel (français/anglais).
@@ -22,7 +23,9 @@ export type Action =
   | { type: "indicatorOff"; id: IndicatorId }
   | { type: "analyze"; ai: boolean; focus: string[]; question?: string }
   | { type: "alert"; alert: Omit<Alert, "id" | "createdAt" | "active" | "repeat"> }
-  | { type: "openTab"; tab: string };
+  | { type: "openTab"; tab: string }
+  | { type: "drawTool"; tool: DrawTool }
+  | { type: "clearDrawings" };
 
 export interface ParseResult {
   actions: Action[];
@@ -154,6 +157,29 @@ export function parseCommand(input: string, assets: AssetDef[], settings: ChartS
     return { actions, summary };
   }
 
+  // --- Dessins à la main
+  if (/\b(efface|effacer|supprime|supprimer|enleve|enlever)\b.*\b(dessins?|traces? manuels?)\b/.test(text)) {
+    actions.push({ type: "clearDrawings" });
+    summary.push("Dessins effacés");
+    return { actions, summary };
+  }
+  if (/\b(a la main|manuel|manuelle|moi[- ]meme|dessine|dessiner)\b/.test(text)) {
+    let tool: DrawTool | null = null;
+    if (/horizontal/.test(text)) tool = "hline";
+    else if (/(extension|ext)\b.*fibo|fibo\w*\s*ext/.test(text)) tool = "fibE";
+    else if (/fibo|retracement/.test(text)) tool = "fibR";
+    else if (/rectangle|zone de prix|boite/.test(text)) tool = "rect";
+    else if (/regle|mesure/.test(text)) tool = "measure";
+    else if (/ligne|droite|tendance|oblique/.test(text)) tool = "trend";
+    if (tool) {
+      actions.push({ type: "drawTool", tool });
+      summary.push(`${DRAW_TOOL_INFO[tool].label} : cliquez sur le graphique`);
+      return { actions, summary };
+    }
+  }
+  // --- Zone d'analyse ciblée (« fibo extension en ciblant une zone »)
+  const wantsZone = /\b(cible|cibler|ciblant|zone d'analyse|intervalle|sur une zone|periode precise)\b/.test(text);
+
   const removing = REMOVE.test(text);
   // Les actifs sont repérés d'abord pour que « taux 10 ans » ne soit pas lu comme une période.
   const scan = scanAssets(text, assets);
@@ -219,6 +245,11 @@ export function parseCommand(input: string, assets: AssetDef[], settings: ChartS
         }
       }
     }
+  }
+
+  if (wantsZone) {
+    actions.push({ type: "drawTool", tool: "zone" });
+    summary.push("Zone d'analyse : cliquez le début puis la fin de la période");
   }
 
   return { actions, summary };

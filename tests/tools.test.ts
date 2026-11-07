@@ -30,22 +30,39 @@ test("zigzag repère A, B, C", () => {
 
 test("extension de Fibonacci placée depuis C avec la longueur AB", () => {
   const out = fibExtension(ctx(abcSeries()));
-  const ext100 = out.drawings.find((d) => d.kind === "line" && d.id === "fibE-1");
-  assert.ok(ext100 && ext100.kind === "line");
+  const fib = out.drawings.find((d) => d.kind === "fib");
+  assert.ok(fib && fib.kind === "fib");
+  assert.equal(fib.anchors.length, 3);
+  const level = (r: number) => fib.levels.find((l) => l.ratio === r)!.value;
   // C (69.5) + (B - A) (100.5 - 9.5 = 91) = 160.5
-  assert.ok(Math.abs(ext100.points[0].value - 160.5) < 1e-6, String(ext100.points[0].value));
-  const ext618 = out.drawings.find((d) => d.kind === "line" && d.id === "fibE-0.618");
-  assert.ok(ext618 && ext618.kind === "line" && Math.abs(ext618.points[0].value - (69.5 + 91 * 0.618)) < 1e-6);
+  assert.ok(Math.abs(level(1) - 160.5) < 1e-6, String(level(1)));
+  assert.ok(Math.abs(level(0.618) - (69.5 + 91 * 0.618)) < 1e-6);
   assert.match(out.reports[0].title, /haussière/);
 });
 
 test("retracement de Fibonacci sur la dernière jambe validée", () => {
   const out = fibRetracement(ctx(abcSeries()));
-  const r618 = out.drawings.find((d) => d.kind === "line" && d.id === "fibR-0.618");
-  assert.ok(r618 && r618.kind === "line");
-  const v = r618.points[0].value;
+  const fib = out.drawings.find((d) => d.kind === "fib");
+  assert.ok(fib && fib.kind === "fib");
+  const v = fib.levels.find((l) => l.ratio === 0.618)!.value;
   // jambe A→B (la plus grande) : 100.5 - 0.618 × 91
   assert.ok(Math.abs(v - (100.5 - 0.618 * 91)) < 1e-6, String(v));
+});
+
+test("zone d'analyse : les outils ne regardent que la période choisie", () => {
+  // série : impulsion 10→100, correction →70, reprise →90, puis nouvelle chute → 40 (hors zone)
+  const base = abcSeries();
+  const extra = Array.from({ length: 20 }, (_, i) => {
+    const p = 90 - (50 * (i + 1)) / 20;
+    return { time: base[base.length - 1].time + (i + 1) * 86400, open: p, high: p + 0.5, low: p - 0.5, close: p };
+  });
+  const full = [...base, ...extra];
+  const zoneBars = full.slice(0, 51); // seulement l'impulsion A→B
+  const out = fibRetracement({ ...ctx(zoneBars), full, offset: 0 });
+  const fib = out.drawings.find((d) => d.kind === "fib");
+  assert.ok(fib && fib.kind === "fib");
+  // la jambe retenue est l'impulsion de la zone (≈ 9.5 → 100.5), pas la chute d'après
+  assert.ok(Math.abs(fib.anchors[0].value - 9.5) < 1e-6 && Math.abs(fib.anchors[1].value - 100.5) < 1e-6, JSON.stringify(fib.anchors));
 });
 
 test("tous les outils s'exécutent sans erreur", () => {
