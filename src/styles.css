@@ -227,3 +227,9 @@ table.corr th { color: var(--muted); font-weight: 500; }
   .analysis-side { border-right: 0; border-bottom: 1px solid var(--border); }
   .card { max-width: none; }
 }
+
+/* --- filet de sécurité (erreur d'affichage) */
+.crash { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; padding: 18px; margin: 12px; border: 1px solid #f43f5e66; background: #22121a; border-radius: 10px; color: var(--text); }
+.crash.full { max-width: 640px; margin: 15vh auto; }
+.crash code { color: #fda4af; white-space: pre-wrap; font-size: 12px; }
+.crash-actions { display: flex; gap: 8px; flex-wrap: wrap; }

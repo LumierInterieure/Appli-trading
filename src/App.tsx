@@ -10,6 +10,7 @@ import { PerformancePanel } from "./components/PerformancePanel.tsx";
 import { Toolbar } from "./components/Toolbar.tsx";
 import { ToolsPanel } from "./components/ToolsPanel.tsx";
 import { Watchlist } from "./components/Watchlist.tsx";
+import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
 import { buildReport, type UniverseEntry } from "./lib/analysis.ts";
 import { type Action, parseCommand } from "./lib/commands.ts";
 import type { Pt } from "./lib/drawings.ts";
@@ -188,7 +189,15 @@ export function App() {
     return () => clearInterval(id);
   }, []);
   const report = useMemo(
-    () => (universeEntries.length >= 3 ? buildReport(universeEntries) : null),
+    () => {
+      if (universeEntries.length < 3) return null;
+      try {
+        return buildReport(universeEntries);
+      } catch (e) {
+        console.error("analyse du marché", e);
+        return null;
+      }
+    },
     [universe.bars, reportTick, universe.progress.done === universe.progress.total], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
@@ -375,17 +384,19 @@ export function App() {
         <button className="btn ai" onClick={() => runActions([{ type: "analyze", ai: false, focus: [] }])}>Analyser le marché</button>
       </header>
 
-      <Watchlist
-        assets={assets}
-        quotes={quotes}
-        mainId={main.id}
-        overlays={settings.overlays}
-        colors={colors}
-        onSelect={setMain}
-        onToggleOverlay={toggleOverlay}
-        onAddCustom={addCustom}
-        onRemoveCustom={(id) => { setCustom((c) => c.filter((x) => x.id !== id)); setSettings((s) => ({ ...s, overlays: s.overlays.filter((o) => o !== id), mainId: s.mainId === id ? "spx" : s.mainId })); }}
-      />
+      <ErrorBoundary area="la liste des actifs" className="watchlist">
+        <Watchlist
+          assets={assets}
+          quotes={quotes}
+          mainId={main.id}
+          overlays={settings.overlays}
+          colors={colors}
+          onSelect={setMain}
+          onToggleOverlay={toggleOverlay}
+          onAddCustom={addCustom}
+          onRemoveCustom={(id) => { setCustom((c) => c.filter((x) => x.id !== id)); setSettings((s) => ({ ...s, overlays: s.overlays.filter((o) => o !== id), mainId: s.mainId === id ? "spx" : s.mainId })); }}
+        />
+      </ErrorBoundary>
 
       <main className="center">
         <div className="chart-head">
@@ -413,22 +424,24 @@ export function App() {
           saveTemplate={saveTemplate}
           deleteTemplate={(id) => setUserTemplates((ts) => ts.filter((t) => t.id !== id))}
         />
-        <Chart
-          main={mainInput}
-          overlays={overlayInputs}
-          settings={settings}
-          drawings={toolOut.drawings}
-          measures={measures}
-          pendingPoint={pending}
-          live={live}
-          interaction={interaction}
-          onChartClick={onChartClick}
-          onRemoveOverlay={toggleOverlay}
-          onMakeMain={setMain}
-          structureKey={`${main.id}|${settings.timeframe}|${settings.mode}|${settings.rebaseTime}`}
-          barSeconds={tf.barSeconds}
-          watermark={main.short}
-        />
+        <ErrorBoundary area="le graphique">
+          <Chart
+            main={mainInput}
+            overlays={overlayInputs}
+            settings={settings}
+            drawings={toolOut.drawings}
+            measures={measures}
+            pendingPoint={pending}
+            live={live}
+            interaction={interaction}
+            onChartClick={onChartClick}
+            onRemoveOverlay={toggleOverlay}
+            onMakeMain={setMain}
+            structureKey={`${main.id}|${settings.timeframe}|${settings.mode}|${settings.rebaseTime}`}
+            barSeconds={tf.barSeconds}
+            watermark={main.short}
+          />
+        </ErrorBoundary>
       </main>
 
       <section className="bottom">
@@ -446,6 +459,7 @@ export function App() {
           <button className="collapse" onClick={() => setPanelOpen((o) => !o)} title={panelOpen ? "Réduire" : "Agrandir"}>{panelOpen ? "▾" : "▴"}</button>
         </nav>
         {panelOpen && (
+          <ErrorBoundary area="le panneau du bas" key={tab}>
           <div className="panel">
             {tab === "tools" && <ToolsPanel reports={toolOut.reports} measures={measures} relative={relative} fmt={valueFmt} barSeconds={tf.barSeconds} onRemoveMeasure={(id) => setMeasures((m) => m.filter((x) => x.id !== id))} />}
             {tab === "perf" && <PerformancePanel assets={assets} bars={universe.bars} quotes={quotes} progress={universe.progress} onSelect={setMain} onOverlay={(id) => id !== main.id && !settings.overlays.includes(id) && toggleOverlay(id)} />}
@@ -474,6 +488,7 @@ export function App() {
               />
             )}
           </div>
+          </ErrorBoundary>
         )}
       </section>
       {toast && <div className="toast" onClick={() => setToast(null)}>{toast}</div>}

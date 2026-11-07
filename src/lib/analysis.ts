@@ -159,7 +159,16 @@ function detectSignals(entry: UniverseEntry): Signal[] {
 }
 
 export function buildReport(universe: UniverseEntry[]): MarketReport {
-  const diags = universe.map(diagnose).filter((d): d is AssetDiag => d !== null);
+  // un actif aux données inattendues ne doit jamais bloquer toute l'analyse
+  const safe = <T,>(fn: () => T, fallback: T): T => {
+    try {
+      return fn();
+    } catch (e) {
+      console.warn("analyse", e);
+      return fallback;
+    }
+  };
+  const diags = universe.map((u) => safe(() => diagnose(u), null)).filter((d): d is AssetDiag => d !== null);
   const by = new Map(diags.map((d) => [d.id, d]));
   const drivers: string[] = [];
   let score = 0;
@@ -233,7 +242,7 @@ export function buildReport(universe: UniverseEntry[]): MarketReport {
   const entries = corrIds.map((id) => universe.find((u) => u.asset.id === id)!);
   const matrix = entries.map((a) => entries.map((b) => (a === b ? 1 : correlation(a.bars, b.bars, 90))));
 
-  const signals = universe.flatMap(detectSignals);
+  const signals = universe.flatMap((u) => safe(() => detectSignals(u), [] as Signal[]));
 
   return {
     generatedAt: Date.now(),

@@ -78,3 +78,12 @@ test("filtre des prix temps réel incohérents", async () => {
   assert.equal(isPlausibleLive(89, last, 300), false); // −11 % sur une bougie de 5 min
   assert.equal(isPlausibleLive(NaN, last, 86400), false);
 });
+
+test("zigzag : une même bougie fait le sommet et la cassure (journée violente) — plus de plantage", () => {
+  const mkBar = (i: number, o: number, h: number, l: number, c: number) => ({ time: i * 86400, open: o, high: h, low: l, close: c });
+  const bars = [mkBar(0, 100, 101, 99, 100), mkBar(1, 100, 106, 99, 105), mkBar(2, 105, 120, 92, 93)];
+  const piv = zigzag(bars, 10);
+  for (const p of piv) assert.ok(p.index >= 0 && p.index < bars.length && Number.isFinite(p.time));
+  // la dernière bougie : nouveau plus haut 120 puis cassure à 92 → sommet validé sur cette bougie
+  assert.ok(piv.some((p) => p.type === "H" && p.index === 2 && p.confirmed));
+});

@@ -37,21 +37,23 @@ export function zigzag(bars: Bar[], threshold: number): Pivot[] {
       if (bars[hi].high - b.low >= threshold) {
         piv.push(mk(hi, "H"));
         dir = -1;
-        lo = hi + 1;
-        for (let j = hi + 1; j <= i; j++) if (bars[j].low < bars[lo].low) lo = j;
+        // plus bas depuis le sommet ; si la même bougie fait le sommet et la cassure, c'est elle
+        lo = Math.min(hi + 1, i);
+        for (let j = lo; j <= i; j++) if (bars[j].low < bars[lo].low) lo = j;
       }
     } else {
       if (b.low <= bars[lo].low) lo = i;
       if (b.high - bars[lo].low >= threshold) {
         piv.push(mk(lo, "L"));
         dir = 1;
-        hi = lo + 1;
-        for (let j = lo + 1; j <= i; j++) if (bars[j].high > bars[hi].high) hi = j;
+        hi = Math.min(lo + 1, i);
+        for (let j = hi; j <= i; j++) if (bars[j].high > bars[hi].high) hi = j;
       }
     }
   }
-  if (dir === 1 && hi > (piv[piv.length - 1]?.index ?? -1)) piv.push(mk(hi, "H", false));
-  if (dir === -1 && lo > (piv[piv.length - 1]?.index ?? -1)) piv.push(mk(lo, "L", false));
+  const lastIdx = piv[piv.length - 1]?.index ?? -1;
+  if (dir === 1 && hi > lastIdx && hi < n) piv.push(mk(hi, "H", false));
+  if (dir === -1 && lo > lastIdx && lo < n) piv.push(mk(lo, "L", false));
   return piv;
 }
 
