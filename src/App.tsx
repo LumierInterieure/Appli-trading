@@ -26,7 +26,7 @@ import {
   SERIES_COLORS,
   type Template,
 } from "./lib/state.ts";
-import { barAtOrAfter, closeAtOrBefore, periodChange } from "./lib/stats.ts";
+import { barAtOrAfter, closeAtOrBefore, isPlausibleLive, periodChange } from "./lib/stats.ts";
 import { load, save } from "./lib/storage.ts";
 import { runTools, TOOL_INFO, type ToolId } from "./lib/tools.ts";
 
@@ -145,11 +145,21 @@ export function App() {
       .filter((x): x is SeriesInput => x !== null);
   }, [overlayAssets.map((a) => a.id).join(), hist.data, baseTime, relative, colors, fmtFor]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Prix temps réel appliqués à la dernière bougie : uniquement s'ils viennent de la même source que
+  // l'historique (réel vs démo) et restent plausibles par rapport à la dernière clôture connue.
   const live = useMemo(() => {
     const out: Record<string, number | undefined> = {};
-    for (const a of [main, ...overlayAssets]) out[a.id] = quotes[a.symbol]?.price;
+    for (const a of [main, ...overlayAssets]) {
+      const q = quotes[a.symbol];
+      const h = hist.data[a.symbol];
+      const last = h?.bars[h.bars.length - 1];
+      if (!q || !h || !last) continue;
+      if (q.demo !== h.demo) continue;
+      if (!isPlausibleLive(q.price, last, tf.barSeconds)) continue;
+      out[a.id] = q.price;
+    }
     return out;
-  }, [quotes, main, overlayAssets.map((a) => a.id).join()]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [quotes, hist.data, main, tf.barSeconds, overlayAssets.map((a) => a.id).join()]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const valueFmt = useCallback((v: number) => (relative ? fmtPct(v) : fmtPrice(v, main)), [relative, main]);
 

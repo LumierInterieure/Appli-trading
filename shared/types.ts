@@ -15,6 +15,8 @@ export interface HistoryResponse {
   currency?: string;
   bars: Bar[];
   demo: boolean;
+  /** Dernières données valides servies car le fournisseur ne répond pas. */
+  stale?: boolean;
   note?: string;
 }
 
@@ -30,6 +32,7 @@ export interface Quote {
   /** Intraday closes for a sparkline. */
   spark: number[];
   demo: boolean;
+  stale?: boolean;
 }
 
 export interface SearchResult {

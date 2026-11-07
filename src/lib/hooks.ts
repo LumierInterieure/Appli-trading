@@ -33,8 +33,10 @@ export function useQuotes(assets: AssetDef[], pollMs: number, demo: boolean) {
           setQuotes((prev) => {
             const next = { ...prev };
             for (const q of qs) if ("price" in q) {
-              // ne pas écraser un prix temps réel plus récent (Binance)
               const cur = prev[q.symbol];
+              // ne jamais remplacer une cotation réelle par une cotation simulée
+              if (cur && !cur.demo && q.demo) continue;
+              // ne pas écraser un prix temps réel plus récent (Binance)
               next[q.symbol] = cur && cur.time > q.time + 5 && !q.demo ? { ...q, price: cur.price, change: cur.price - q.previousClose, changePct: (cur.price / q.previousClose - 1) * 100, time: cur.time } : q;
             }
             return next;

@@ -1,6 +1,6 @@
 import type { Bar, Quote } from "../shared/types.ts";
 import { TtlCache } from "./cache.ts";
-import { fetchChart, fetchQuote, UpstreamError } from "./yahoo.ts";
+import { fetchChart, fetchQuotesBatch, UpstreamError } from "./yahoo.ts";
 
 /**
  * TOTAL3ES = capitalisation crypto totale hors BTC, ETH et stablecoins.
@@ -45,6 +45,8 @@ interface Calibration {
 }
 
 const calCache = new TtlCache<Calibration>(4);
+/** Dernière calibration CoinGecko réussie, conservée si CoinGecko ne répond plus (évite les sauts de niveau). */
+let lastGoodCal: Calibration | null = null;
 const histCache = new TtlCache<Bar[]>(200);
 
 async function geckoJson(path: string) {
@@ -78,9 +80,10 @@ async function calibration(): Promise<Calibration> {
       for (const k of STABLE_KEYS) excluded += pct[k] ?? 0;
       const realCap = total ? total * (1 - excluded / 100) : 0;
       const k = realCap > 0 && basketCap > 0 ? realCap / basketCap : 1;
-      return { supplies, k, source: "coingecko" };
+      lastGoodCal = { supplies, k, source: "coingecko" };
+      return lastGoodCal;
     } catch {
-      return { supplies, k: 1, source: "fallback" };
+      return lastGoodCal ?? { supplies, k: 1, source: "fallback" };
     }
   });
 }
@@ -142,17 +145,18 @@ export async function total3esHistory(range: string, interval: string): Promise<
 export async function total3esQuote(): Promise<Quote> {
   const cal = await calibration();
   const [quotes, intraday] = await Promise.all([
-    Promise.allSettled(COMPONENTS.map((c) => fetchQuote(c.yahoo))),
+    fetchQuotesBatch(COMPONENTS.map((c) => c.yahoo)),
     total3esHistory("1d", "5m").catch(() => ({ bars: [] as Bar[], note: "" })),
   ]);
   let price = 0, prev = 0, n = 0;
-  quotes.forEach((q, i) => {
-    if (q.status !== "fulfilled") return;
-    const s = cal.supplies.get(COMPONENTS[i].yahoo) ?? COMPONENTS[i].supply;
-    price += q.value.price * s;
-    prev += q.value.previousClose * s;
+  for (const c of COMPONENTS) {
+    const q = quotes.get(c.yahoo);
+    if (!q) continue;
+    const s = cal.supplies.get(c.yahoo) ?? c.supply;
+    price += q.price * s;
+    prev += q.previousClose * s;
     n++;
-  });
+  }
   if (n < COMPONENTS.length / 2) throw new UpstreamError("TOTAL3ES indisponible", true);
   price *= cal.k;
   prev *= cal.k;

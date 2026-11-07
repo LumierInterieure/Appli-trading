@@ -212,3 +212,14 @@ export function forecastPaths(closes: number[], horizon: number, nPaths = 1500):
   out.probUp = up / nPaths;
   return out;
 }
+
+/**
+ * Un prix en direct est-il cohérent avec la dernière bougie ? Écart maximal toléré
+ * par rapport à sa clôture : 8 % en intraday, 20 % au-delà (largement au-dessus
+ * des mouvements réels, mais bloque les incohérences de source ou d'échelle).
+ */
+export function isPlausibleLive(price: number, last: Bar, barSeconds: number): boolean {
+  if (!Number.isFinite(price) || price <= 0 || !last.close) return false;
+  const max = barSeconds < 86400 ? 0.08 : 0.2;
+  return Math.abs(price / last.close - 1) <= max;
+}

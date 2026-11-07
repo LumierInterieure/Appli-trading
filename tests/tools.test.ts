@@ -69,3 +69,12 @@ test("variation sur période et projection", () => {
   assert.ok(fc);
   assert.ok(fc.p05[10] < fc.p50[10] && fc.p50[10] < fc.p95[10]);
 });
+
+test("filtre des prix temps réel incohérents", async () => {
+  const { isPlausibleLive } = await import("../src/lib/stats.ts");
+  const last = { time: 0, open: 100, high: 101, low: 99, close: 100 };
+  assert.equal(isPlausibleLive(103, last, 86400), true);
+  assert.equal(isPlausibleLive(171, last, 86400), false); // ex. TOTAL3ES recalé (×1,71)
+  assert.equal(isPlausibleLive(89, last, 300), false); // −11 % sur une bougie de 5 min
+  assert.equal(isPlausibleLive(NaN, last, 86400), false);
+});
